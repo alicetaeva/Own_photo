@@ -1,0 +1,341 @@
+/* Own Photo — кнопка на картинке и окно выбора. Цвета берутся из темы ST. */
+
+/* ---------- кнопка на картинке ---------- */
+
+.ownphoto-wrap {
+    position: relative;
+    display: inline-block;
+    max-width: 100%;
+    line-height: 0;
+    vertical-align: top;
+}
+
+.ownphoto-btn {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    z-index: 2;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2));
+    background: var(--SmartThemeBlurTintColor, rgba(20, 20, 20, 0.85));
+    color: var(--SmartThemeBodyColor, #ddd);
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    -webkit-tap-highlight-color: transparent;
+}
+
+body[data-ownphoto-pos="top-right"] .ownphoto-btn {
+    left: auto;
+    right: 6px;
+}
+
+body[data-ownphoto-pos="bottom-left"] .ownphoto-btn {
+    top: auto;
+    bottom: 6px;
+}
+
+body[data-ownphoto-pos="bottom-right"] .ownphoto-btn {
+    top: auto;
+    left: auto;
+    right: 6px;
+    bottom: 6px;
+}
+
+.ownphoto-wrap:hover .ownphoto-btn,
+.ownphoto-btn:focus-visible {
+    opacity: 1;
+}
+
+.ownphoto-btn:hover {
+    color: var(--SmartThemeQuoteColor, #fff);
+}
+
+.ownphoto-btn:focus-visible {
+    outline: 2px solid var(--SmartThemeQuoteColor, #fff);
+    outline-offset: 2px;
+}
+
+/* На сенсорных экранах hover нет: кнопка видна всегда и крупнее. */
+@media (hover: none) {
+    .ownphoto-btn {
+        opacity: 0.85;
+        width: 40px;
+        height: 40px;
+        font-size: 16px;
+    }
+}
+
+body.ownphoto-disabled .ownphoto-btn {
+    display: none;
+}
+
+body.ownphoto-disabled .ownphoto-wrap {
+    display: contents;
+}
+
+/* ---------- окно ---------- */
+
+.ownphoto-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 30000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px;
+    background: rgba(0, 0, 0, 0.55);
+}
+
+.ownphoto-card {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-width: 460px;
+    max-height: calc(100dvh - 24px);
+    border-radius: 12px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2));
+    background: var(--SmartThemeBlurTintColor, #1c1c1c);
+    color: var(--SmartThemeBodyColor, #ddd);
+    box-shadow: 0 8px 32px var(--SmartThemeShadowColor, rgba(0, 0, 0, 0.5));
+    animation: ownphoto-in 0.16s ease-out;
+}
+
+.ownphoto-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 12px 12px 8px 16px;
+}
+
+.ownphoto-title {
+    margin: 0;
+    font-size: 1.1em;
+    font-weight: 600;
+}
+
+.ownphoto-close {
+    flex: 0 0 auto;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.ownphoto-body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 4px 16px 12px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.ownphoto-label {
+    margin-bottom: 4px;
+    font-size: 0.85em;
+    opacity: 0.7;
+}
+
+.ownphoto-prompt-text {
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: rgba(128, 128, 128, 0.15);
+    font-size: 0.9em;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+
+.ownphoto-drop {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 140px;
+    padding: 8px;
+    border-radius: 10px;
+    border: 2px dashed var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.3));
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.ownphoto-drop:hover,
+.ownphoto-drop.is-over,
+.ownphoto-drop:focus-visible {
+    border-color: var(--SmartThemeQuoteColor, #fff);
+    background: rgba(128, 128, 128, 0.1);
+    outline: none;
+}
+
+.ownphoto-drop-hint {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 12px;
+    text-align: center;
+    opacity: 0.8;
+}
+
+.ownphoto-drop-hint i {
+    font-size: 1.8em;
+}
+
+.ownphoto-drop-hint[hidden],
+.ownphoto-preview[hidden] {
+    display: none;
+}
+
+.ownphoto-preview {
+    display: block;
+    max-width: 100%;
+    max-height: min(42vh, 340px);
+    object-fit: contain;
+    border-radius: 6px;
+}
+
+.ownphoto-meta {
+    font-size: 0.85em;
+    opacity: 0.7;
+    text-align: center;
+}
+
+.ownphoto-field {
+    display: block;
+}
+
+/* 16px — чтобы iOS не увеличивал страницу при фокусе в поле. */
+.ownphoto-name {
+    width: 100%;
+    min-height: 40px;
+    margin: 0;
+    font-size: 16px;
+}
+
+.ownphoto-path {
+    font-size: 0.82em;
+    opacity: 0.7;
+    overflow-wrap: anywhere;
+}
+
+.ownphoto-note {
+    font-size: 0.82em;
+    opacity: 0.55;
+}
+
+.ownphoto-error {
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid #c0392b;
+    background: rgba(192, 57, 43, 0.15);
+    font-size: 0.9em;
+}
+
+.ownphoto-error[hidden],
+.ownphoto-prompt[hidden],
+.ownphoto-meta[hidden] {
+    display: none;
+}
+
+.ownphoto-foot {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    padding: 8px 16px 14px;
+    border-top: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.15));
+}
+
+.ownphoto-foot .menu_button {
+    min-height: 40px;
+    margin: 0;
+    padding: 0 16px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: auto;
+}
+
+.ownphoto-save[disabled] {
+    opacity: 0.45;
+    pointer-events: none;
+}
+
+.ownphoto-spin {
+    animation: ownphoto-rotate 0.9s linear infinite;
+}
+
+/* ---------- настройки ---------- */
+
+.ownphoto-setting {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 8px 0;
+}
+
+/* ---------- телефон: окно выезжает снизу ---------- */
+
+@media (max-width: 600px) {
+    .ownphoto-overlay {
+        align-items: flex-end;
+        padding: 0;
+    }
+
+    .ownphoto-card {
+        max-width: none;
+        max-height: 92dvh;
+        border-radius: 14px 14px 0 0;
+        border-bottom: none;
+        animation: ownphoto-up 0.2s ease-out;
+    }
+
+    .ownphoto-foot {
+        padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+    }
+
+    .ownphoto-foot .menu_button {
+        flex: 1 1 0;
+    }
+
+    .ownphoto-drop {
+        min-height: 120px;
+    }
+}
+
+@keyframes ownphoto-in {
+    from { opacity: 0; transform: scale(0.97); }
+    to { opacity: 1; transform: none; }
+}
+
+@keyframes ownphoto-up {
+    from { transform: translateY(24px); opacity: 0.6; }
+    to { transform: none; opacity: 1; }
+}
+
+@keyframes ownphoto-rotate {
+    to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .ownphoto-card,
+    .ownphoto-btn,
+    .ownphoto-drop {
+        animation: none;
+        transition: none;
+    }
+}
