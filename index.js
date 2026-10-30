@@ -10,7 +10,6 @@ const DEFAULTS = Object.freeze({
     enabled: true,
     side: 'top-left',  // 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' — угол кнопки
     maxSide: 2048,     // 0 = не уменьшать
-    autoPick: true,    // сразу открывать галерею при нажатии на кнопку
 });
 
 // ---------- i18n ----------
@@ -36,6 +35,7 @@ const L = {
         domOnly: 'Фото загружено, но тег в тексте сообщения не найден: замена видна только до обновления страницы.',
         saveFail: 'Картинка заменена, но чат не сохранился',
         errTimeout: 'Сервер слишком долго не отвечает',
+        changeHint: 'нажмите на фото, чтобы выбрать другое',
         stepPrepare: 'Готовлю фото…',
         stepUpload: 'Загружаю…',
         stepSave: 'Сохраняю…',
@@ -47,7 +47,6 @@ const L = {
         bottomRight: 'Снизу справа',
         sMax: 'Макс. сторона фото',
         original: 'Оригинал',
-        sAuto: 'Сразу открывать галерею',
     },
     en: {
         btnTitle: 'Replace with your photo',
@@ -69,6 +68,7 @@ const L = {
         domOnly: 'Photo uploaded, but the tag was not found in the message text: the swap is visible only until reload.',
         saveFail: 'Image replaced, but the chat could not be saved',
         errTimeout: 'The server is taking too long to respond',
+        changeHint: 'tap the photo to choose another',
         stepPrepare: 'Preparing…',
         stepUpload: 'Uploading…',
         stepSave: 'Saving…',
@@ -80,7 +80,6 @@ const L = {
         bottomRight: 'Bottom right',
         sMax: 'Max photo side',
         original: 'Original',
-        sAuto: 'Open the gallery immediately',
     },
 };
 
@@ -395,177 +394,153 @@ async function commit({ where, folder, file, name, onStep = () => {} }) {
     toast('success', t('done'));
 }
 
-// ---------- окно ----------
+// ---------- выбор файла ----------
 
-function openModal({ folder, prompt, autoPick, submit }) {
+// Выбор файла открываем первым, прямо в обработчике клика (иначе браузер не даст).
+// Окно подтверждения показываем уже после того, как галерея закрылась.
+function pickFile() {
     return new Promise((resolve) => {
-        let file = null;
-        let objUrl = '';
-        let busy = false;
-        let closed = false;
+        document.querySelectorAll('input.ownphoto-file').forEach((n) => n.remove());
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = 'image/*';
+        input.className = 'ownphoto-file';
+        input.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;';
+        let done = false;
+        const finish = (f) => { if (!done) { done = true; resolve(f); } };
+        input.addEventListener('change', () => finish(input.files?.[0] || null));
+        input.addEventListener('cancel', () => finish(null));
+        document.body.appendChild(input);
+        input.click();
+    });
+}
 
+function isImageFile(f) {
+    return (f.type || '').startsWith('image/') || /\.(heic|heif|avif|jpe?g|png|webp|gif|bmp)$/i.test(f.name || '');
+}
+
+// ---------- форма (общая для родного окна ST и запасного) ----------
+
+function buildForm({ folder, prompt, file, onPickAnother }) {
+    const root = el('div', 'ownphoto-form');
+    root.innerHTML = `
+        <div class="ownphoto-prompt" hidden>
+            <div class="ownphoto-label"></div>
+            <div class="ownphoto-prompt-text"></div>
+        </div>
+        <button type="button" class="ownphoto-drop"><img class="ownphoto-preview" alt=""></button>
+        <div class="ownphoto-meta"></div>
+        <label class="ownphoto-field">
+            <span class="ownphoto-label ownphoto-name-label"></span>
+            <input type="text" class="text_pole ownphoto-name" autocomplete="off" autocapitalize="off" spellcheck="false">
+        </label>
+        <div class="ownphoto-path"></div>
+        <div class="ownphoto-note"></div>`;
+
+    const q = (sel) => root.querySelector(sel);
+    const preview = q('.ownphoto-preview');
+    const meta = q('.ownphoto-meta');
+    const nameInput = q('.ownphoto-name');
+    let current = null;
+    let objUrl = '';
+
+    q('.ownphoto-prompt .ownphoto-label').textContent = t('forPrompt');
+    q('.ownphoto-name-label').textContent = t('name');
+    q('.ownphoto-note').textContent = t('overwrite');
+    nameInput.value = `photo_${stamp()}`;
+    if (prompt) {
+        q('.ownphoto-prompt').hidden = false;
+        q('.ownphoto-prompt-text').textContent = prompt.length > 240 ? prompt.slice(0, 240) + '…' : prompt;
+    }
+
+    const updatePath = () => {
+        q('.ownphoto-path').textContent = `${t('willSave')}: /user/images/${folder}/${cleanName(nameInput.value)}.${extGuess(current)}`;
+    };
+
+    const setFile = (f) => {
+        if (!f) return;
+        if (!isImageFile(f)) { toast('error', t('errType')); return; }
+        current = f;
+        if (objUrl) URL.revokeObjectURL(objUrl);
+        objUrl = URL.createObjectURL(f);
+        preview.onload = () => {
+            meta.textContent = `${preview.naturalWidth}×${preview.naturalHeight} · ${(f.size / 1048576).toFixed(1)} MB · ${t('changeHint')}`;
+        };
+        preview.onerror = () => { meta.textContent = `${f.name} · ${(f.size / 1048576).toFixed(1)} MB · ${t('changeHint')}`; };
+        preview.src = objUrl;
+        updatePath();
+    };
+
+    q('.ownphoto-drop').addEventListener('click', async () => {
+        const f = await onPickAnother();
+        if (f) setFile(f);
+    });
+    nameInput.addEventListener('input', updatePath);
+    setFile(file);
+
+    return {
+        root,
+        getFile: () => current,
+        getName: () => nameInput.value,
+        destroy: () => { if (objUrl) URL.revokeObjectURL(objUrl); },
+    };
+}
+
+// Запасное окно — на случай, если в этой версии ST нет callGenericPopup.
+function askInOwnOverlay(form) {
+    return new Promise((resolve) => {
         const overlay = el('div', 'ownphoto-overlay');
         overlay.setAttribute('role', 'dialog');
         overlay.setAttribute('aria-modal', 'true');
         overlay.innerHTML = `
             <div class="ownphoto-card">
-                <div class="ownphoto-head">
-                    <h3 class="ownphoto-title"></h3>
-                    <button type="button" class="ownphoto-close menu_button" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
-                </div>
-                <div class="ownphoto-body">
-                    <div class="ownphoto-prompt" hidden>
-                        <div class="ownphoto-label"></div>
-                        <div class="ownphoto-prompt-text"></div>
-                    </div>
-                    <button type="button" class="ownphoto-drop">
-                        <img class="ownphoto-preview" alt="" hidden>
-                        <span class="ownphoto-drop-hint"><i class="fa-solid fa-image"></i><span></span></span>
-                    </button>
-                    <div class="ownphoto-meta" hidden></div>
-                    <label class="ownphoto-field">
-                        <span class="ownphoto-label ownphoto-name-label"></span>
-                        <input type="text" class="text_pole ownphoto-name" autocomplete="off" autocapitalize="off" spellcheck="false">
-                    </label>
-                    <div class="ownphoto-path"></div>
-                    <div class="ownphoto-note"></div>
-                    <div class="ownphoto-error" role="alert" hidden></div>
-                    <input type="file" accept="image/*" hidden>
-                </div>
+                <div class="ownphoto-head"><h3 class="ownphoto-title"></h3></div>
+                <div class="ownphoto-slot"></div>
                 <div class="ownphoto-foot">
                     <button type="button" class="ownphoto-cancel menu_button"></button>
-                    <button type="button" class="ownphoto-save menu_button menu_button_icon" disabled><i class="fa-solid fa-check"></i><span></span></button>
+                    <button type="button" class="ownphoto-save menu_button"></button>
                 </div>
             </div>`;
-
-        const q = (s) => overlay.querySelector(s);
-        const input = q('input[type=file]');
-        const nameInput = q('.ownphoto-name');
-        const preview = q('.ownphoto-preview');
-        const dropHint = q('.ownphoto-drop-hint');
-        const meta = q('.ownphoto-meta');
-        const errBox = q('.ownphoto-error');
-        const saveBtn = q('.ownphoto-save');
-
-        q('.ownphoto-title').textContent = t('title');
-        q('.ownphoto-prompt .ownphoto-label').textContent = t('forPrompt');
-        dropHint.querySelector('span').textContent = t('dropHint');
-        q('.ownphoto-name-label').textContent = t('name');
-        q('.ownphoto-note').textContent = t('overwrite');
-        q('.ownphoto-cancel').textContent = t('cancel');
-        saveBtn.querySelector('span').textContent = t('replace');
-        nameInput.value = `photo_${stamp()}`;
-
-        if (prompt) {
-            q('.ownphoto-prompt').hidden = false;
-            q('.ownphoto-prompt-text').textContent = prompt.length > 240 ? prompt.slice(0, 240) + '…' : prompt;
-        }
-
-        const updatePath = () => {
-            q('.ownphoto-path').textContent = `${t('willSave')}: /user/images/${folder}/${cleanName(nameInput.value)}.${extGuess(file)}`;
-        };
-        const showError = (msg) => { errBox.textContent = msg; errBox.hidden = !msg; };
-
-        const close = (result) => {
-            if (closed) return;
-            closed = true;
-            document.removeEventListener('keydown', onKey, true);
-            document.removeEventListener('paste', onPaste, true);
-            if (objUrl) URL.revokeObjectURL(objUrl);
-            overlay.remove();
-            resolve(result);
-        };
-
-        const setFile = (f) => {
-            showError('');
-            if (!f) return;
-            if (!(f.type || '').startsWith('image/') && !/\.(heic|heif|avif|jpe?g|png|webp|gif|bmp)$/i.test(f.name || '')) {
-                showError(t('errType'));
-                return;
-            }
-            file = f;
-            if (objUrl) URL.revokeObjectURL(objUrl);
-            objUrl = URL.createObjectURL(f);
-            preview.onload = () => {
-                meta.textContent = `${preview.naturalWidth}×${preview.naturalHeight} · ${(f.size / 1048576).toFixed(1)} MB`;
-                meta.hidden = false;
-            };
-            preview.onerror = () => { meta.hidden = true; };
-            preview.src = objUrl;
-            preview.hidden = false;
-            dropHint.hidden = true;
-            saveBtn.disabled = false;
-            updatePath();
-        };
-
-        const onKey = (e) => {
-            if (e.key === 'Escape') { e.stopPropagation(); close(false); }
-        };
-        const onPaste = (e) => {
-            const f = [...(e.clipboardData?.files || [])].find((x) => x.type.startsWith('image/'));
-            if (f && !busy) { e.preventDefault(); setFile(f); }
-        };
-
-        q('.ownphoto-close').addEventListener('click', () => close(false));
-        q('.ownphoto-cancel').addEventListener('click', () => close(false));
-        q('.ownphoto-drop').addEventListener('click', () => { if (!busy) input.click(); });
-        input.addEventListener('change', () => { setFile(input.files?.[0]); input.value = ''; });
-        nameInput.addEventListener('input', updatePath);
-
-        const drop = q('.ownphoto-drop');
-        drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('is-over'); });
-        drop.addEventListener('dragleave', () => drop.classList.remove('is-over'));
-        drop.addEventListener('drop', (e) => {
-            e.preventDefault();
-            drop.classList.remove('is-over');
-            if (!busy) setFile(e.dataTransfer?.files?.[0]);
-        });
-
-        saveBtn.addEventListener('click', async () => {
-            if (busy || !file) return;
-            busy = true;
-            saveBtn.disabled = true;
-            const icon = saveBtn.querySelector('i');
-            const label = saveBtn.querySelector('span');
-            const prevIcon = icon.className;
-            const prevLabel = label.textContent;
-            icon.className = 'fa-solid fa-spinner ownphoto-spin';
-            showError('');
-            try {
-                await submit({ file, name: nameInput.value, onStep: (txt) => { if (!closed) label.textContent = txt; } });
-                busy = false;
-                close(true);
-            } catch (err) {
-                log('submit failed', err);
-                busy = false;
-                if (closed) {
-                    toast('error', err?.message || String(err));
-                } else {
-                    showError(err?.message || String(err));
-                    saveBtn.disabled = false;
-                    icon.className = prevIcon;
-                    label.textContent = prevLabel;
-                }
-            }
-        });
-
-        document.addEventListener('keydown', onKey, true);
-        document.addEventListener('paste', onPaste, true);
+        overlay.querySelector('.ownphoto-title').textContent = t('title');
+        overlay.querySelector('.ownphoto-slot').appendChild(form.root);
+        overlay.querySelector('.ownphoto-cancel').textContent = t('cancel');
+        overlay.querySelector('.ownphoto-save').textContent = t('replace');
+        const close = (ok) => { overlay.remove(); resolve(ok); };
+        overlay.querySelector('.ownphoto-cancel').addEventListener('click', () => close(false));
+        overlay.querySelector('.ownphoto-save').addEventListener('click', () => close(true));
         document.body.appendChild(overlay);
-        updatePath();
-
-        // Вызов внутри того же клика по кнопке — браузеры разрешают открыть выбор файла.
-        if (autoPick) {
-            try { input.click(); } catch { /* ничего: останется ручной выбор */ }
-        } else {
-            drop.focus();
-        }
     });
+}
+
+async function askDetails({ folder, prompt, file }) {
+    const form = buildForm({ folder, prompt, file, onPickAnother: pickFile });
+    const c = ctx();
+    try {
+        let ok;
+        if (typeof c.callGenericPopup === 'function' && c.POPUP_TYPE) {
+            const holder = el('div', 'ownphoto-popup');
+            const title = el('h3', 'ownphoto-title');
+            title.textContent = t('title');
+            holder.append(title, form.root);
+            const res = await c.callGenericPopup(holder, c.POPUP_TYPE.CONFIRM, '', {
+                okButton: t('replace'),
+                cancelButton: t('cancel'),
+                allowVerticalScrolling: true,
+            });
+            ok = res === true || res === (c.POPUP_RESULT?.AFFIRMATIVE ?? 1);
+        } else {
+            ok = await askInOwnOverlay(form);
+        }
+        const chosen = form.getFile();
+        return ok && chosen ? { file: chosen, name: form.getName() } : null;
+    } finally {
+        form.destroy();
+    }
 }
 
 // ---------- клик по кнопке ----------
 
-let swapInFlight = false;
+let swapBusy = false;
 
 function readPrompt(instr) {
     if (!instr) return '';
@@ -578,11 +553,7 @@ function readPrompt(instr) {
 }
 
 async function onSwap(btn) {
-    // Если флаг завис, а окна уже нет, сбрасываем его, чтобы кнопка не «умирала».
-    if (swapInFlight && document.querySelector('.ownphoto-overlay')) return;
-    document.querySelectorAll('.ownphoto-overlay').forEach((n) => n.remove());
-    swapInFlight = false;
-    log('клик по кнопке');
+    if (swapBusy) return;
     const img = btn.closest('.ownphoto-wrap')?.querySelector('img');
     const mesEl = img?.closest('.mes');
     if (!img || !mesEl) return;
@@ -590,21 +561,26 @@ async function onSwap(btn) {
     const where = describe(img, mesEl);
     const message = ctx().chat?.[where.mesid];
     if (!message) { toast('error', t('errNoMsg')); return; }
-
     const folder = message.name || ctx().name2 || 'user';
-    swapInFlight = true;
+    const prompt = readPrompt(where.instr);
+    log('клик по кнопке', where);
+
+    // Вызов pickFile — синхронно в клике, до любых await.
+    const file = await pickFile();
+    if (!file) { log('файл не выбран'); return; }
+    log('выбран файл', file.name, file.type, file.size);
+
+    swapBusy = true;
     try {
-        await openModal({
-            folder,
-            prompt: readPrompt(where.instr),
-            autoPick: settings().autoPick,
-            submit: ({ file, name, onStep }) => commit({ where, folder, file, name, onStep }),
-        });
+        const picked = await askDetails({ folder, prompt, file });
+        if (!picked) { log('отменено'); return; }
+        toast('info', t('stepUpload'));
+        await commit({ where, folder, file: picked.file, name: picked.name });
     } catch (err) {
         log('onSwap failed', err);
         toast('error', err?.message || String(err));
     } finally {
-        swapInFlight = false;
+        swapBusy = false;
     }
 }
 
@@ -625,7 +601,6 @@ function mountSettings() {
             </div>
             <div class="inline-drawer-content">
                 <label class="checkbox_label"><input type="checkbox" id="ownphoto_enabled" ${s.enabled ? 'checked' : ''}><span>${t('sEnabled')}</span></label>
-                <label class="checkbox_label"><input type="checkbox" id="ownphoto_auto" ${s.autoPick ? 'checked' : ''}><span>${t('sAuto')}</span></label>
                 <label class="ownphoto-setting"><span>${t('sSide')}</span>
                     <select id="ownphoto_side" class="text_pole">
                         <option value="top-left" ${sel('top-left', s.side)}>${t('topLeft')}</option>
@@ -649,7 +624,6 @@ function mountSettings() {
 
     const save = () => ctx().saveSettingsDebounced();
     wrap.querySelector('#ownphoto_enabled').addEventListener('change', (e) => { settings().enabled = e.target.checked; applyBodyClasses(); save(); });
-    wrap.querySelector('#ownphoto_auto').addEventListener('change', (e) => { settings().autoPick = e.target.checked; save(); });
     wrap.querySelector('#ownphoto_side').addEventListener('change', (e) => { settings().side = normalizeSide(e.target.value); applyBodyClasses(); save(); });
     wrap.querySelector('#ownphoto_max').addEventListener('change', (e) => { settings().maxSide = Number(e.target.value); save(); });
     return true;
