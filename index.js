@@ -35,6 +35,10 @@ const L = {
         done: 'Картинка заменена',
         domOnly: 'Фото загружено, но тег в тексте сообщения не найден: замена видна только до обновления страницы.',
         saveFail: 'Картинка заменена, но чат не сохранился',
+        errTimeout: 'Сервер слишком долго не отвечает',
+        stepPrepare: 'Готовлю фото…',
+        stepUpload: 'Загружаю…',
+        stepSave: 'Сохраняю…',
         sEnabled: 'Показывать кнопку на картинках',
         sSide: 'Положение кнопки',
         topLeft: 'Сверху слева',
@@ -64,6 +68,10 @@ const L = {
         done: 'Image replaced',
         domOnly: 'Photo uploaded, but the tag was not found in the message text: the swap is visible only until reload.',
         saveFail: 'Image replaced, but the chat could not be saved',
+        errTimeout: 'The server is taking too long to respond',
+        stepPrepare: 'Preparing…',
+        stepUpload: 'Uploading…',
+        stepSave: 'Saving…',
         sEnabled: 'Show the button on images',
         sSide: 'Button position',
         topLeft: 'Top left',
@@ -97,6 +105,14 @@ function toast(type, msg) {
 }
 
 const log = (...a) => console.log(`[${NAME}]`, ...a);
+
+function withTimeout(promise, ms) {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(t('errTimeout'))), ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 
 function decodeEntities(s) {
     const ta = document.createElement('textarea');
@@ -281,13 +297,24 @@ async function processFile(file, maxSide) {
 }
 
 async function upload({ base64, ext, folder, filename }) {
-    const res = await fetch('/api/images/upload', {
-        method: 'POST',
-        headers: ctx().getRequestHeaders(),
-        body: JSON.stringify({ image: base64, format: ext, ch_name: folder, filename }),
-    });
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 90000);
+    let res;
+    try {
+        res = await fetch('/api/images/upload', {
+            method: 'POST',
+            headers: ctx().getRequestHeaders(),
+            body: JSON.stringify({ image: base64, format: ext, ch_name: folder, filename }),
+            signal: ctrl.signal,
+        });
+    } catch (err) {
+        throw new Error(err?.name === 'AbortError' ? t('errTimeout') : `${t('errUpload')}: ${err?.message || err}`);
+    } finally {
+        clearTimeout(timer);
+    }
     if (!res.ok) throw new Error(`${t('errUpload')} (${res.status})`);
     const data = await res.json();
+    log('upload ответ:', data);
     let p = String(data?.path || '').replace(/\\/g, '/');
     if (!p) throw new Error(t('errUpload'));
     if (/^https?:/i.test(p)) return p;
@@ -319,16 +346,24 @@ function patchMessage(where, newSrc) {
     return true;
 }
 
-async function commit({ where, folder, file, name }) {
+async function commit({ where, folder, file, name, onStep = () => {} }) {
     const message = ctx().chat?.[where.mesid];
     if (!message) throw new Error(t('errNoMsg'));
 
+    onStep(t('stepPrepare'));
+    log('commit: файл', file.name, file.type, file.size);
     const { base64, ext } = await processFile(file, settings().maxSide);
+
+    onStep(t('stepUpload'));
+    log('commit: загрузка', ext, `${Math.round(base64.length / 1024)} KB base64`);
     const newSrc = await upload({ base64, ext, folder, filename: cleanName(name) });
+    log('commit: загружено →', newSrc);
 
+    onStep(t('stepSave'));
     const patched = patchMessage(where, newSrc);
-
     const live = resolveLiveImg(where);
+    log('commit: текст сообщения изменён =', patched, '| живая картинка найдена =', !!live);
+
     if (live) {
         live.removeAttribute('srcset');
         live.setAttribute('src', newSrc);
@@ -341,15 +376,23 @@ async function commit({ where, folder, file, name }) {
     }
 
     try {
-        await ctx().saveChat();
-        const { eventSource, eventTypes, event_types } = ctx();
-        const ev = (eventTypes || event_types)?.MESSAGE_UPDATED;
-        if (ev) await eventSource.emit(ev, where.mesid);
-        toast('success', t('done'));
+        await withTimeout(Promise.resolve(ctx().saveChat()), 10000);
     } catch (err) {
         log('saveChat failed', err);
         toast('warning', t('saveFail'));
+        return;
     }
+
+    // Другие расширения слушают MESSAGE_UPDATED, но ждать их не нужно: любое зависание
+    // чужого обработчика не должно держать наше окно.
+    try {
+        const { eventSource, eventTypes, event_types } = ctx();
+        const ev = (eventTypes || event_types)?.MESSAGE_UPDATED;
+        if (ev) Promise.resolve(eventSource.emit(ev, where.mesid)).catch((e) => log('MESSAGE_UPDATED handler failed', e));
+    } catch (err) {
+        log('emit failed', err);
+    }
+    toast('success', t('done'));
 }
 
 // ---------- окно ----------
@@ -359,6 +402,7 @@ function openModal({ folder, prompt, autoPick, submit }) {
         let file = null;
         let objUrl = '';
         let busy = false;
+        let closed = false;
 
         const overlay = el('div', 'ownphoto-overlay');
         overlay.setAttribute('role', 'dialog');
@@ -423,6 +467,8 @@ function openModal({ folder, prompt, autoPick, submit }) {
         const showError = (msg) => { errBox.textContent = msg; errBox.hidden = !msg; };
 
         const close = (result) => {
+            if (closed) return;
+            closed = true;
             document.removeEventListener('keydown', onKey, true);
             document.removeEventListener('paste', onPaste, true);
             if (objUrl) URL.revokeObjectURL(objUrl);
@@ -453,15 +499,15 @@ function openModal({ folder, prompt, autoPick, submit }) {
         };
 
         const onKey = (e) => {
-            if (e.key === 'Escape' && !busy) { e.stopPropagation(); close(false); }
+            if (e.key === 'Escape') { e.stopPropagation(); close(false); }
         };
         const onPaste = (e) => {
             const f = [...(e.clipboardData?.files || [])].find((x) => x.type.startsWith('image/'));
             if (f && !busy) { e.preventDefault(); setFile(f); }
         };
 
-        q('.ownphoto-close').addEventListener('click', () => { if (!busy) close(false); });
-        q('.ownphoto-cancel').addEventListener('click', () => { if (!busy) close(false); });
+        q('.ownphoto-close').addEventListener('click', () => close(false));
+        q('.ownphoto-cancel').addEventListener('click', () => close(false));
         q('.ownphoto-drop').addEventListener('click', () => { if (!busy) input.click(); });
         input.addEventListener('change', () => { setFile(input.files?.[0]); input.value = ''; });
         nameInput.addEventListener('input', updatePath);
@@ -480,19 +526,26 @@ function openModal({ folder, prompt, autoPick, submit }) {
             busy = true;
             saveBtn.disabled = true;
             const icon = saveBtn.querySelector('i');
+            const label = saveBtn.querySelector('span');
             const prevIcon = icon.className;
+            const prevLabel = label.textContent;
             icon.className = 'fa-solid fa-spinner ownphoto-spin';
             showError('');
             try {
-                await submit({ file, name: nameInput.value });
+                await submit({ file, name: nameInput.value, onStep: (txt) => { if (!closed) label.textContent = txt; } });
                 busy = false;
                 close(true);
             } catch (err) {
                 log('submit failed', err);
-                showError(err?.message || String(err));
                 busy = false;
-                saveBtn.disabled = false;
-                icon.className = prevIcon;
+                if (closed) {
+                    toast('error', err?.message || String(err));
+                } else {
+                    showError(err?.message || String(err));
+                    saveBtn.disabled = false;
+                    icon.className = prevIcon;
+                    label.textContent = prevLabel;
+                }
             }
         });
 
@@ -525,7 +578,11 @@ function readPrompt(instr) {
 }
 
 async function onSwap(btn) {
-    if (swapInFlight) return;
+    // Если флаг завис, а окна уже нет, сбрасываем его, чтобы кнопка не «умирала».
+    if (swapInFlight && document.querySelector('.ownphoto-overlay')) return;
+    document.querySelectorAll('.ownphoto-overlay').forEach((n) => n.remove());
+    swapInFlight = false;
+    log('клик по кнопке');
     const img = btn.closest('.ownphoto-wrap')?.querySelector('img');
     const mesEl = img?.closest('.mes');
     if (!img || !mesEl) return;
@@ -541,7 +598,7 @@ async function onSwap(btn) {
             folder,
             prompt: readPrompt(where.instr),
             autoPick: settings().autoPick,
-            submit: ({ file, name }) => commit({ where, folder, file, name }),
+            submit: ({ file, name, onStep }) => commit({ where, folder, file, name, onStep }),
         });
     } catch (err) {
         log('onSwap failed', err);
