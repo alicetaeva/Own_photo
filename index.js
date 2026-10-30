@@ -1,3 +1,4 @@
+
 // Own Photo — замена сгенерированной (или ещё не сгенерированной) картинки своим фото.
 // Ищет <img data-iig-instruction=... src="[IMG:GEN]"> в сообщениях, добавляет кнопку-камеру,
 // загружает выбранный файл на сервер ST (/api/images/upload, в папку персонажа) и
@@ -208,7 +209,8 @@ function describe(img, mesEl) {
     const index = list.indexOf(img);
     const instr = img.getAttribute('data-iig-instruction') || '';
     const dupIdx = list.slice(0, index).filter((i) => (i.getAttribute('data-iig-instruction') || '') === instr).length;
-    return { mesid: Number(mesEl.getAttribute('mesid')), index, instr, dupIdx, domCount: list.length };
+    const oldSrc = img.getAttribute('src') || '';
+    return { mesid: Number(mesEl.getAttribute('mesid')), index, instr, dupIdx, domCount: list.length, oldSrc };
 }
 
 // Сообщение могли перерисовать, пока было открыто окно, поэтому живой <img> ищем заново.
@@ -323,26 +325,66 @@ async function upload({ base64, ext, folder, filename }) {
 
 // ---------- запись в сообщение ----------
 
-// Возвращает true, если src переписан в тексте сообщения (и в swipes).
+function safeDecode(v) {
+    try { return decodeURI(v); } catch { return v; }
+}
+
+// Переписывает src в тексте сообщения (и в swipes). Ищет цель тремя способами:
+// 1) тег с той же инструкцией, 2) старый путь картинки как строка, 3) порядковый номер тега.
+// Возвращает { ok, how } или { ok: false, diag } с короткой причиной для уведомления.
 function patchMessage(where, newSrc) {
     const message = ctx().chat?.[where.mesid];
-    if (!message || typeof message.mes !== 'string') return false;
+    if (!message || typeof message.mes !== 'string') return { ok: false, diag: 'no message text' };
+    const text = message.mes;
+    const tags = rawCandidates(text);
+    let newText = null;
+    let how = '';
 
-    const tags = rawCandidates(message.mes);
+    // 1) по инструкции
     let target = null;
     if (where.instr) {
         const same = tags.filter((x) => x.instr === where.instr);
         target = same[where.dupIdx] ?? (same.length === 1 ? same[0] : null);
+        if (target) how = 'instruction';
     }
-    if (!target && tags.length === where.domCount) target = tags[where.index];
-    if (!target) return false;
 
-    const newTag = withSrc(target.tag, newSrc);
-    message.mes = message.mes.slice(0, target.start) + newTag + message.mes.slice(target.start + target.tag.length);
+    // 2) по старому пути (если это не заглушка [IMG:GEN])
+    const oldSrc = where.oldSrc || '';
+    const variants = [];
+    if (oldSrc && !/IMG:GEN/i.test(oldSrc)) {
+        for (const v of [oldSrc, safeDecode(oldSrc), encodeURI(safeDecode(oldSrc))]) {
+            if (v && !variants.includes(v)) variants.push(v);
+        }
+    }
+    if (!target) {
+        for (const v of variants) {
+            const i = text.indexOf(v);
+            if (i < 0 || text.indexOf(v, i + 1) !== -1) continue;
+            newText = text.slice(0, i) + newSrc + text.slice(i + v.length);
+            how = 'old path';
+            break;
+        }
+    }
+
+    // 3) по порядковому номеру
+    if (!target && newText === null && tags.length === where.domCount) {
+        target = tags[where.index];
+        how = 'index';
+    }
+
+    if (target) newText = text.slice(0, target.start) + withSrc(target.tag, newSrc) + text.slice(target.start + target.tag.length);
+
+    if (newText === null) {
+        const imgCount = (text.match(/<img/gi) || []).length;
+        const hasPath = variants.some((v) => text.includes(v));
+        return { ok: false, diag: `tags ${tags.length}/${where.domCount}, <img> ${imgCount}, path ${hasPath ? 'yes' : 'no'}, len ${text.length}` };
+    }
+
+    message.mes = newText;
     if (Array.isArray(message.swipes) && Number.isInteger(message.swipe_id) && typeof message.swipes[message.swipe_id] === 'string') {
         message.swipes[message.swipe_id] = message.mes;
     }
-    return true;
+    return { ok: true, how };
 }
 
 async function commit({ where, folder, file, name, onStep = () => {} }) {
@@ -359,9 +401,10 @@ async function commit({ where, folder, file, name, onStep = () => {} }) {
     log('commit: загружено →', newSrc);
 
     onStep(t('stepSave'));
-    const patched = patchMessage(where, newSrc);
+    const res = patchMessage(where, newSrc);
+    const patched = res.ok;
     const live = resolveLiveImg(where);
-    log('commit: текст сообщения изменён =', patched, '| живая картинка найдена =', !!live);
+    log('commit: текст сообщения изменён =', patched, res.how || res.diag, '| живая картинка найдена =', !!live);
 
     if (live) {
         live.removeAttribute('srcset');
@@ -370,7 +413,7 @@ async function commit({ where, folder, file, name, onStep = () => {} }) {
     }
 
     if (!patched) {
-        toast('warning', t('domOnly'));
+        toast('warning', `${t('domOnly')} [${res.diag}]`);
         return;
     }
 
