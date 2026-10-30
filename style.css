@@ -86,7 +86,10 @@ body.ownphoto-disabled .ownphoto-wrap {
 
 .ownphoto-overlay {
     position: fixed;
-    inset: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
     z-index: 30000;
     display: flex;
     align-items: center;
@@ -100,6 +103,7 @@ body.ownphoto-disabled .ownphoto-wrap {
     flex-direction: column;
     width: 100%;
     max-width: 460px;
+    max-height: calc(100vh - 24px);
     max-height: calc(100dvh - 24px);
     border-radius: 12px;
     border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2));
@@ -134,13 +138,22 @@ body.ownphoto-disabled .ownphoto-wrap {
     justify-content: center;
 }
 
-.ownphoto-body {
+.ownphoto-form {
     display: flex;
     flex-direction: column;
     gap: 10px;
+    text-align: left;
+}
+
+.ownphoto-card .ownphoto-slot {
     padding: 4px 16px 12px;
     overflow-y: auto;
     overscroll-behavior: contain;
+}
+
+.ownphoto-popup .ownphoto-title {
+    margin: 0 0 10px;
+    text-align: center;
 }
 
 .ownphoto-label {
@@ -162,7 +175,7 @@ body.ownphoto-disabled .ownphoto-wrap {
     display: flex;
     align-items: center;
     justify-content: center;
-    min-height: 140px;
+    min-height: 100px;
     padding: 8px;
     border-radius: 10px;
     border: 2px dashed var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.3));
@@ -298,6 +311,7 @@ body.ownphoto-disabled .ownphoto-wrap {
 
     .ownphoto-card {
         max-width: none;
+        max-height: 92vh;
         max-height: 92dvh;
         border-radius: 14px 14px 0 0;
         border-bottom: none;
