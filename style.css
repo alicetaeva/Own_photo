@@ -353,3 +353,11 @@ body.ownphoto-disabled .ownphoto-wrap {
         transition: none;
     }
 }
+
+.ownphoto-debug {
+    width: 100%;
+    min-height: 220px;
+    font-size: 12px;
+    font-family: monospace;
+    resize: vertical;
+}
