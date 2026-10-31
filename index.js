@@ -5,6 +5,7 @@
 
 const MODULE = 'own_photo';
 const NAME = 'Own Photo';
+const VERSION = '1.2.0';
 
 const DEFAULTS = Object.freeze({
     enabled: true,
@@ -458,7 +459,7 @@ async function commit({ where, folder, file, name, onStep = () => {} }) {
     }
 
     if (!patched) {
-        toast('warning', `${t('domOnly')} [${res.diag}]`);
+        toast('warning', `${t('domOnly')} [v${VERSION}; ${res.diag}]`);
         return;
     }
 
@@ -686,7 +687,7 @@ function mountSettings() {
     const wrap = el('div', '', `
         <div class="inline-drawer" id="ownphoto_settings">
             <div class="inline-drawer-toggle inline-drawer-header">
-                <b>${NAME}</b>
+                <b>${NAME} <small>v${VERSION}</small></b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
@@ -751,7 +752,7 @@ jQuery(() => {
             if (mountSettings() || ++tries > 20) clearInterval(retry);
         }, 1000);
 
-        log('загружен');
+        log(`v${VERSION} загружен`);
     } catch (err) {
         console.error(`[${NAME}] init failed`, err);
     }
