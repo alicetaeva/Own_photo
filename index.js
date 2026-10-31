@@ -317,9 +317,9 @@ async function upload({ base64, ext, folder, filename }) {
     log('upload ответ:', data);
     let p = String(data?.path || '').replace(/\\/g, '/');
     if (!p) throw new Error(t('errUpload'));
-    if (/^https?:/i.test(p)) return p;
-    if (!p.startsWith('/')) p = '/' + p;
-    return p.split('/').map((seg, i) => (i === 0 ? seg : encodeURIComponent(seg))).join('/');
+    if (/^(?:https?:)?\/\//i.test(p)) return p;
+    // Как у генератора: путь хранится без кодирования, с ведущим «/».
+    return p.startsWith('/') ? p : `/${p.replace(/^\/+/, '')}`;
 }
 
 // ---------- запись в сообщение ----------
@@ -328,129 +328,108 @@ function safeDecode(v) {
     try { return decodeURI(v); } catch { return v; }
 }
 
-const fileBase = (p) => safeDecode(String(p || '').split(/[?#]/)[0].split('/').pop() || '');
-const fileDir = (p) => safeDecode(String(p || '').split(/[?#]/)[0].split('/').slice(0, -1).join('/'));
-
-// Чистая функция: ищет нужное место в тексте и возвращает { text, how } или null.
-// Способы: 1) тег с той же инструкцией, 2) старый путь целиком, 3) только имя старого файла
-// (если папка не меняется), 4) порядковый номер тега.
-function patchText(text, where, newSrc, allowIndex = true) {
-    const tags = rawCandidates(text);
-
-    let target = null;
-    if (where.instr) {
-        const same = tags.filter((x) => x.instr === where.instr);
-        target = same[where.dupIdx] ?? (same.length === 1 ? same[0] : null);
-    }
-    if (target) {
-        return { how: 'instruction', text: text.slice(0, target.start) + withSrc(target.tag, newSrc) + text.slice(target.start + target.tag.length) };
-    }
-
-    const oldSrc = where.oldSrc || '';
-    if (oldSrc && !/IMG:GEN/i.test(oldSrc)) {
-        const variants = [...new Set([oldSrc, safeDecode(oldSrc), encodeURI(safeDecode(oldSrc))])].filter(Boolean);
-        for (const v of variants) {
-            const i = text.indexOf(v);
-            if (i < 0 || text.indexOf(v, i + 1) !== -1) continue;
-            return { how: 'old path', text: text.slice(0, i) + newSrc + text.slice(i + v.length) };
-        }
-        const oldBase = fileBase(oldSrc);
-        if (oldBase.length >= 6 && fileDir(oldSrc) === fileDir(newSrc)) {
-            const i = text.indexOf(oldBase);
-            if (i >= 0 && text.indexOf(oldBase, i + 1) === -1) {
-                return { how: 'file name', text: text.slice(0, i) + fileBase(newSrc) + text.slice(i + oldBase.length) };
-            }
-        }
-    }
-
-    if (allowIndex && tags.length === where.domCount && tags[where.index]) {
-        const tg = tags[where.index];
-        return { how: 'index', text: text.slice(0, tg.start) + withSrc(tg.tag, newSrc) + text.slice(tg.start + tg.tag.length) };
-    }
-    return null;
-}
-
-// Тексты сообщения, где может лежать тег: основной, display_text и текущий свайп.
-function messageFields(m) {
+function pathVariants(oldSrc) {
     const out = [];
-    if (typeof m?.mes === 'string') out.push({ name: 'mes', get: () => m.mes, set: (v) => { m.mes = v; } });
-    if (typeof m?.extra?.display_text === 'string') out.push({ name: 'display_text', get: () => m.extra.display_text, set: (v) => { m.extra.display_text = v; } });
-    if (Array.isArray(m?.swipes) && typeof m.swipes[m.swipe_id] === 'string') {
-        out.push({ name: 'swipe', get: () => m.swipes[m.swipe_id], set: (v) => { m.swipes[m.swipe_id] = v; } });
+    if (!oldSrc || /IMG:GEN|error\.svg/i.test(oldSrc)) return out;
+    for (const v of [oldSrc, safeDecode(oldSrc), encodeURI(safeDecode(oldSrc))]) {
+        if (v && !out.includes(v)) out.push(v);
     }
     return out;
 }
 
-// Сначала сообщение с номером из DOM; если там тега нет, ищем по всему чату (от ближних к дальним).
-function findOwner(where) {
-    const chat = ctx().chat || [];
-    const dummy = `${fileDir(where.oldSrc)}/__probe__.jpg`; // та же папка, чтобы проба по имени файла работала
-    const has = (m, allowIndex) => messageFields(m).some((f) => patchText(f.get(), where, dummy, allowIndex));
-    if (chat[where.mesid] && has(chat[where.mesid], true)) return chat[where.mesid];
-    const order = chat.map((_, i) => i).sort((x, y) => Math.abs(x - where.mesid) - Math.abs(y - where.mesid));
-    for (const i of order) if (i !== where.mesid && has(chat[i], false)) return chat[i];
-    return null;
-}
-
-function debugInfo(where, newSrc) {
-    const chat = ctx().chat || [];
-    const m = chat[where.mesid];
-    const base = fileBase(where.oldSrc);
-    const count = (txt, needle) => (needle ? txt.split(needle).length - 1 : 0);
-    const lines = [
-        `mesid=${where.mesid}, chat=${chat.length}, DOM tags=${where.domCount}`,
-        `old src: ${where.oldSrc}`,
-        `new src: ${newSrc}`,
-        `message keys: ${m ? Object.keys(m).join(', ') : '—'}`,
-        `extra keys: ${m?.extra ? Object.keys(m.extra).join(', ') : '—'}`,
-    ];
-    for (const f of messageFields(m)) {
-        const txt = f.get();
-        lines.push(`[${f.name}] len=${txt.length}, <img=${count(txt.toLowerCase(), '<img')}, data-iig=${count(txt, 'data-iig')}, IMG:GEN=${count(txt, 'IMG:GEN')}, image_nb=${count(txt, 'image_nb')}, file name=${count(txt, base)}`);
-    }
-    const txt = m?.mes || '';
-    const hit = ['data-iig', 'iig_', 'image_nb', '/user/images', 'IMG:GEN'].map((k) => txt.indexOf(k)).filter((i) => i >= 0).sort((x, y) => x - y)[0];
-    if (hit !== undefined) lines.push('snippet: ' + txt.slice(Math.max(0, hit - 40), hit + 260).replace(/\s+/g, ' '));
-    return lines.join('\n');
-}
-
-// Возвращает { ok, how } или { ok: false, diag }.
-function patchMessage(where, newSrc) {
-    const owner = findOwner(where);
-    if (!owner) return { ok: false, diag: 'tag not found in chat' };
+// Правка одной строки: 1) тег с той же инструкцией, 2) старый путь картинки,
+// 3) порядковый номер тега. Возвращает { text, how } или null.
+function patchText(text, where, newSrc, deep) {
+    const tags = rawCandidates(text);
+    let target = null;
     let how = '';
-    let ok = false;
-    for (const f of messageFields(owner)) {
-        const r = patchText(f.get(), where, newSrc, true);
-        if (r) { f.set(r.text); ok = true; how = how || `${f.name}: ${r.how}`; }
+
+    if (where.instr) {
+        const same = tags.filter((x) => x.instr === where.instr);
+        target = same[where.dupIdx] ?? (same.length === 1 ? same[0] : null);
+        if (target) how = 'instruction';
     }
-    return ok ? { ok, how } : { ok: false, diag: 'no field matched' };
+
+    if (!target) {
+        for (const v of pathVariants(where.oldSrc)) {
+            const i = text.indexOf(v);
+            if (i < 0 || text.indexOf(v, i + 1) !== -1) continue;
+            return { text: text.slice(0, i) + newSrc + text.slice(i + v.length), how: 'old path' };
+        }
+    }
+
+    if (!target) {
+        const indexOk = deep ? (where.domCount === 1 && tags.length === 1) : tags.length === where.domCount;
+        if (indexOk) { target = tags[where.index] ?? tags[0]; how = 'index'; }
+    }
+
+    if (!target) return null;
+    return { text: text.slice(0, target.start) + withSrc(target.tag, newSrc) + text.slice(target.start + target.tag.length), how };
 }
 
-// Другое расширение (Imaginy srcsync) может само переписать текст, когда видит новый src на экране.
-async function waitForExternalSync(where, newSrc, ms = 2500) {
-    const base = fileBase(newSrc);
-    const started = Date.now();
-    while (Date.now() - started < ms) {
-        const chat = ctx().chat || [];
-        if (chat.some((m) => messageFields(m).some((f) => f.get().includes(base)))) return true;
-        await new Promise((r) => setTimeout(r, 200));
-    }
-    return false;
+// Обходит все строки объекта (extra, swipe_info и т.д.), вызывая fn(holder, key, path).
+function walkStrings(root, rootPath, fn) {
+    const seen = new WeakSet();
+    const visit = (holder, key, path, depth) => {
+        const v = holder[key];
+        if (typeof v === 'string') { fn(holder, key, path); return; }
+        if (!v || typeof v !== 'object' || depth > 8 || seen.has(v)) return;
+        seen.add(v);
+        for (const k of Object.keys(v)) visit(v, k, `${path}.${k}`, depth + 1);
+    };
+    for (const k of Object.keys(root)) visit(root, k, rootPath ? `${rootPath}.${k}` : k, 0);
 }
 
-async function showDebug(text) {
+const skipString = (v) => v.length < 20 || v.length > 2000000 || v.startsWith('data:');
+
+// Переписывает src там, где лежит тег: в тексте сообщения, а также в любых других полях
+// сообщения и метаданных чата (так хранят блоки расширения вроде ExtBlocks).
+function patchMessage(where, newSrc) {
     const c = ctx();
-    if (typeof c.callGenericPopup !== 'function' || !c.POPUP_TYPE) return;
-    const box = el('div', 'ownphoto-popup');
-    const h = el('h3', 'ownphoto-title');
-    h.textContent = 'Own Photo: debug';
-    const ta = document.createElement('textarea');
-    ta.className = 'text_pole ownphoto-debug';
-    ta.readOnly = true;
-    ta.value = text;
-    box.append(h, ta);
-    try { await c.callGenericPopup(box, c.POPUP_TYPE.TEXT, ''); } catch { /* не критично */ }
+    const message = c.chat?.[where.mesid];
+    if (!message) return { ok: false, diag: 'no message' };
+
+    const hits = [];
+
+    if (typeof message.mes === 'string') {
+        const r = patchText(message.mes, where, newSrc, false);
+        if (r) {
+            message.mes = r.text;
+            hits.push(`mes(${r.how})`);
+            if (Array.isArray(message.swipes) && Number.isInteger(message.swipe_id) && typeof message.swipes[message.swipe_id] === 'string') {
+                message.swipes[message.swipe_id] = message.mes;
+            }
+        }
+    }
+
+    const patchHolder = (holder, key, path) => {
+        if (path === 'mes' || path.startsWith('swipes') || skipString(holder[key])) return;
+        const r = patchText(holder[key], where, newSrc, true);
+        if (r) { holder[key] = r.text; hits.push(`${path}(${r.how})`); }
+    };
+    walkStrings(message, '', patchHolder);
+    if (c.chatMetadata && typeof c.chatMetadata === 'object') walkStrings(c.chatMetadata, 'metadata', patchHolder);
+
+    if (hits.length) return { ok: true, how: hits.join(', ') };
+
+    // Не нашли: собираем короткую подсказку, где этот блок может лежать.
+    let snippet = '';
+    try { snippet = String(JSON.parse(where.instr)?.prompt || '').slice(0, 30); } catch { /* нет */ }
+    const found = [];
+    if (snippet) {
+        if (typeof message.mes === 'string' && message.mes.includes(snippet)) found.push('mes');
+        walkStrings(message, '', (h, k, path) => { if (!path.startsWith('swipes') && path !== 'mes' && h[k].includes(snippet)) found.push(path); });
+        if (c.chatMetadata) walkStrings(c.chatMetadata, 'metadata', (h, k, path) => { if (h[k].includes(snippet)) found.push(path); });
+    }
+    const text = typeof message.mes === 'string' ? message.mes : '';
+    const diag = [
+        `mes <img> ${(text.match(/<img/gi) || []).length}`,
+        `image_nb ${text.includes('image_nb') ? 'yes' : 'no'}`,
+        `prompt found in: ${found.slice(0, 3).join(', ') || 'nowhere'}`,
+        `keys: ${Object.keys(message).join(',')}`,
+        `extra: ${Object.keys(message.extra || {}).join(',')}`,
+    ].join('; ').slice(0, 300);
+    return { ok: false, diag };
 }
 
 async function commit({ where, folder, file, name, onStep = () => {} }) {
@@ -479,13 +458,8 @@ async function commit({ where, folder, file, name, onStep = () => {} }) {
     }
 
     if (!patched) {
-        const synced = await waitForExternalSync(where, newSrc);
-        log('commit: текст не изменён нами; внешняя синхронизация =', synced, res.diag);
-        if (!synced) {
-            toast('warning', `${t('domOnly')} [${res.diag}]`);
-            showDebug(debugInfo(where, newSrc));
-            return;
-        }
+        toast('warning', `${t('domOnly')} [${res.diag}]`);
+        return;
     }
 
     try {
@@ -675,7 +649,9 @@ async function onSwap(btn) {
     const where = describe(img, mesEl);
     const message = ctx().chat?.[where.mesid];
     if (!message) { toast('error', t('errNoMsg')); return; }
-    const folder = message.name || ctx().name2 || 'user';
+    // Та же папка, что у генератора: имя карточки персонажа, а в группах 'generated'.
+    const c = ctx();
+    const folder = (c.characterId !== undefined && c.characters?.[c.characterId]?.name) || 'generated';
     const prompt = readPrompt(where.instr);
     log('клик по кнопке', where);
 
